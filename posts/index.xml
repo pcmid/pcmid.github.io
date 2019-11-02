@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Posts on iｄ&#39;s blog</title>
+    <link>https://pcmid.github.io/posts/</link>
+    <description>Recent content in Posts on iｄ&#39;s blog</description>
+    <generator>Hugo -- gohugo.io</generator>
+    <language>en-us</language>
+    <lastBuildDate>Fri, 01 Nov 2019 21:46:27 +0800</lastBuildDate>
+    
+	<atom:link href="https://pcmid.github.io/posts/index.xml" rel="self" type="application/rss+xml" />
+    
+    
+    <item>
+      <title>Hello World</title>
+      <link>https://pcmid.github.io/posts/hello-world/</link>
+      <pubDate>Fri, 01 Nov 2019 21:46:27 +0800</pubDate>
+      
+      <guid>https://pcmid.github.io/posts/hello-world/</guid>
+      <description> Hello,World! </description>
+    </item>
+    
+  </channel>
+</rss>
