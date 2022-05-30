@@ -5,7 +5,16 @@
     <link>/posts/</link>
     <description>Recent content in Posts on iｄ&#39;s blog</description>
     <generator>Hugo -- gohugo.io</generator>
-    <lastBuildDate>Fri, 01 Nov 2019 21:46:27 +0800</lastBuildDate><atom:link href="/posts/index.xml" rel="self" type="application/rss+xml" />
+    <lastBuildDate>Mon, 30 May 2022 11:33:36 +0800</lastBuildDate><atom:link href="/posts/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>使用 wireguard 和 bird 根据路由进行透明代理</title>
+      <link>/posts/20220530-wireguard-bird-transparent-proxy/</link>
+      <pubDate>Mon, 30 May 2022 11:33:36 +0800</pubDate>
+      
+      <guid>/posts/20220530-wireguard-bird-transparent-proxy/</guid>
+      <description>DRAFT </description>
+    </item>
+    
     <item>
       <title>Hello World</title>
       <link>/posts/hello-world/</link>
