@@ -2,17 +2,17 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
   xmlns:xhtml="http://www.w3.org/1999/xhtml">
   <url>
-    <loc>https://blog.shabi.id/posts/hello-world/</loc>
+    <loc>/posts/hello-world/</loc>
     <lastmod>2019-11-01T21:46:27+08:00</lastmod>
   </url><url>
-    <loc>https://blog.shabi.id/</loc>
+    <loc>/</loc>
     <lastmod>2019-11-01T21:46:27+08:00</lastmod>
   </url><url>
-    <loc>https://blog.shabi.id/posts/</loc>
+    <loc>/posts/</loc>
     <lastmod>2019-11-01T21:46:27+08:00</lastmod>
   </url><url>
-    <loc>https://blog.shabi.id/categories/</loc>
+    <loc>/categories/</loc>
   </url><url>
-    <loc>https://blog.shabi.id/tags/</loc>
+    <loc>/tags/</loc>
   </url>
 </urlset>
