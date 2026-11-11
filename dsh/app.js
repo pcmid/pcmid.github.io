@@ -46,6 +46,10 @@ const TEXT = {
     loading: 'Loading…',
     retry: 'Retry',
     leave: 'Leave',
+    state_connected: 'Connected',
+    state_connecting: 'Connecting…',
+    state_retrying: 'Cannot connect',
+    state_rejected: 'No longer paired',
     noWorker: 'This browser cannot run the launcher: service workers are unavailable. Use HTTPS and a current browser; private browsing modes may block them.',
     noCrypto: 'This page must be served over HTTPS.',
     expired: 'This pairing code has expired. Create a new one in DSH settings.',
@@ -85,6 +89,10 @@ const TEXT = {
     loading: '正在加载…',
     retry: '重试',
     leave: '离开',
+    state_connected: '已连接',
+    state_connecting: '正在连接…',
+    state_retrying: '无法连接',
+    state_rejected: '已不再配对',
     noWorker: '此浏览器无法运行启动页：Service Worker 不可用。请使用 HTTPS 和较新的浏览器；无痕模式可能会禁用它。',
     noCrypto: '此页面必须通过 HTTPS 打开。',
     expired: '配对码已过期，请在 DSH 设置中重新生成。',
@@ -265,6 +273,7 @@ window.__DSH_REMOTE__ = {
 /** @type {{ host: object, remote: RemoteHost } | undefined} */
 let current
 let chipTimer
+const QUIET_MS = 2000
 
 function guessDeviceName() {
   const agent = navigator.userAgent
@@ -317,8 +326,13 @@ function showHome() {
   void renderHosts()
 }
 
-function setChip(state, text, collapsible) {
+/**
+ * Status chip over the DSH page. It shows while the tunnel is not connected and briefly when the
+ * tunnel comes back; a connected session puts it away with `restChip`.
+ */
+function setChip(state, text) {
   const chip = $('chip')
+  chip.hidden = false
   chip.dataset.state = state
   delete chip.dataset.collapsed
   chip.querySelector('.text').textContent = text
@@ -326,14 +340,35 @@ function setChip(state, text, collapsible) {
   $('chip-leave').hidden = false
   $('chip-retry').hidden = state !== 'retrying' && state !== 'connecting'
   clearTimeout(chipTimer)
-  if (collapsible) {
-    chipTimer = setTimeout(() => {
-      chip.dataset.collapsed = ''
-      chip.querySelector('.text').hidden = true
-      $('chip-leave').hidden = true
-      $('chip-retry').hidden = true
-    }, 3000)
+}
+
+/**
+ * Put away the chip of a connected session, now or after `delay` ms. The DSH page's own device
+ * button replaces it; a DSH without that button keeps a dot, the only way back to the launcher.
+ */
+function restChip(delay = 0) {
+  clearTimeout(chipTimer)
+  if (delay > 0) {
+    chipTimer = setTimeout(() => { restChip() }, delay)
+    return
   }
+  const chip = $('chip')
+  if (chip.dataset.state !== 'connected') return
+  if (current?.bridge !== 'none') {
+    chip.hidden = true
+    return
+  }
+  chip.hidden = false
+  chip.dataset.collapsed = ''
+  chip.querySelector('.text').hidden = true
+  $('chip-leave').hidden = true
+  $('chip-retry').hidden = true
+}
+
+function leave() {
+  closeSession()
+  localStorage.removeItem('dsh-remote:last')
+  showHome()
 }
 
 async function openSession(host) {
@@ -346,7 +381,7 @@ async function openSession(host) {
     return
   }
   closeSession()
-  const label = host.hostName || host.serverId.slice(0, 8)
+  const label = hostLabel(host)
   const remote = new RemoteHost({
     relayUrl: host.relayUrl,
     serverId: host.serverId,
@@ -354,29 +389,59 @@ async function openSession(host) {
     deviceName: host.deviceName,
     onstatus: (status) => {
       if (current?.remote !== remote) return
+      session.state = ['connected', 'rejected', 'retrying'].includes(status.state) ? status.state : 'connecting'
+      void sendContext(session)
       if (status.state === 'connected') {
-        setChip('connected', t('connected', { host: label }), true)
+        clearTimeout(session.quietTimer)
+        session.quietTimer = undefined
+        setChip('connected', t('connected', { host: label }))
         if (!session.loaded) {
+          // The first connection shows as the page itself.
           session.loaded = true
-          $('veil').textContent = ''
           frame.src = `${APP_SCOPE.href}${token}/`
+          restChip()
+        } else if (session.troubled) {
+          restChip(2500)
+        } else {
+          restChip()
         }
-      } else if (status.state === 'rejected') {
-        setChip('rejected', status.code === 'unknown-device' ? t('rejected', { host: label }) : t('failed', { error: status.error }), false)
-      } else if (status.state === 'retrying') {
-        setChip('retrying', t('retrying', { host: label, error: status.error }), false)
-      } else {
-        setChip('connecting', t('connecting', { host: label }), false)
+        session.troubled = false
+        return
       }
+      if (session.loaded && status.state === 'connecting' && !session.troubled) {
+        // A tunnel that drops and returns at once, as when the phone wakes, is not news.
+        session.quietTimer ??= setTimeout(() => {
+          session.quietTimer = undefined
+          if (current === session && session.state !== 'connected') showTrouble(remote.status)
+        }, QUIET_MS)
+        return
+      }
+      showTrouble(status)
     },
   })
+  const showTrouble = (status) => {
+    session.troubled = session.loaded
+    if (status.state === 'rejected') setChip('rejected', status.code === 'unknown-device' ? t('rejected', { host: label }) : t('failed', { error: status.error }))
+    else if (status.state === 'retrying') setChip('retrying', t('retrying', { host: label, error: status.error }))
+    else setChip('connecting', t('connecting', { host: label }))
+  }
   const frame = document.createElement('iframe')
   frame.title = label
   frame.allow = 'clipboard-read; clipboard-write; microphone; fullscreen'
   frame.style.visibility = 'hidden'
-  frame.addEventListener('load', () => { frame.style.visibility = 'visible' })
-  const session = { host, remote, frame, loaded: false }
+  frame.addEventListener('load', () => {
+    frame.style.visibility = 'visible'
+    clearTimeout(session.bridgeTimer)
+    session.bridgeTimer = setTimeout(() => {
+      if (session.bridge !== 'waiting') return
+      session.bridge = 'none'
+      if (current === session) restChip()
+    }, BRIDGE_WAIT_MS)
+  })
+  // bridge: 'waiting' until the page says hello, 'ready' after, 'none' when it never did.
+  const session = { host, remote, frame, loaded: false, troubled: false, quietTimer: undefined, state: 'connecting', bridge: 'waiting', bridgeTimer: undefined }
   current = session
+  setChip('connecting', t('connecting', { host: label }))
   $('veil').textContent = t('loading')
   $('session').append(frame)
   $('home').hidden = true
@@ -389,8 +454,90 @@ function closeSession() {
   const session = current
   current = undefined
   if (session === undefined) return
+  clearTimeout(session.bridgeTimer)
+  clearTimeout(session.quietTimer)
+  clearTimeout(chipTimer)
   session.remote.stop()
   session.frame.remove()
+}
+
+function hostLabel(host) {
+  return host.hostName || host.serverId.slice(0, 8)
+}
+
+// ---------------------------------------------------------------------------
+// Device menu bridge
+// ---------------------------------------------------------------------------
+
+// The DSH page in the frame runs the dsh-remote-relay client plugin. Embedded, it says hello to its
+// parent and, once answered, shows its sidebar device button with a menu built from our rows. This
+// window answers as a DSH that shows another device would: the menu lists the DSHs paired in this
+// browser, and "This device" returns to the launcher. The messages carry no secrets; only the
+// current frame is heard.
+const BRIDGE = 'dsh-remote-relay'
+const BRIDGE_VERSION = 1
+const BRIDGE_WAIT_MS = 15_000
+
+async function sendContext(session) {
+  if (session.bridge !== 'ready') return
+  const hosts = (await listHosts()).sort((a, b) => b.pairedAt - a.pairedAt)
+  const target = session.frame.contentWindow
+  if (current !== session || target === null) return
+  const state = session.state
+  const tone = state === 'connected' ? 'ok' : state === 'connecting' ? 'warn' : 'error'
+  const remotes = hosts.map((host) => {
+    const shown = host.serverId === session.host.serverId
+    return {
+      id: host.serverId,
+      name: hostLabel(host),
+      meta: shown ? t(`state_${state}`) : '',
+      metaTone: shown && tone === 'error' ? 'error' : undefined,
+      tone: shown ? tone : undefined,
+      current: shown,
+      busy: false,
+      action: shown && state !== 'connected' ? 'retry' : 'switch',
+    }
+  })
+  target.postMessage({
+    channel: BRIDGE,
+    v: BRIDGE_VERSION,
+    type: 'context',
+    id: session.host.serverId,
+    name: hostLabel(session.host),
+    state,
+    shown: true,
+    pending: null,
+    rows: { local: { id: session.host.deviceId ?? '', name: session.host.deviceName || guessDeviceName(), current: false }, remotes },
+    attributes: {},
+  }, location.origin)
+}
+
+async function onBridgeMessage(event) {
+  const session = current
+  const data = event.data
+  if (session === undefined || event.source !== session.frame.contentWindow || data?.channel !== BRIDGE || data.v !== BRIDGE_VERSION) return
+  if (data.type === 'hello') {
+    if (session.bridge !== 'ready') {
+      session.bridge = 'ready'
+      if ($('chip').dataset.collapsed !== undefined) restChip()
+    }
+    await sendContext(session)
+  } else if (data.type === 'menu-open') {
+    await sendContext(session)
+  } else if (data.type === 'local') {
+    leave()
+  } else if (data.type === 'add') {
+    leave()
+    $('add-card').scrollIntoView({ block: 'center' })
+    $('pair-input').focus()
+  } else if (data.type === 'row' && typeof data.id === 'string') {
+    if (data.id === session.host.serverId) {
+      if (session.state !== 'connected') session.remote.retryNow()
+      return
+    }
+    const host = (await listHosts()).find((candidate) => candidate.serverId === data.id)
+    if (host !== undefined && current === session) await openSession(host)
+  }
 }
 
 /**
@@ -560,16 +707,24 @@ async function startScan() {
 
 async function main() {
   applyStaticText()
-  $('chip-leave').addEventListener('click', () => {
+  $('chip-leave').addEventListener('click', leave)
+  window.addEventListener('message', (event) => { void onBridgeMessage(event) })
+  window.addEventListener('hashchange', () => {
+    // A pairing link opened in a tab that already shows the launcher changes only the fragment.
+    const code = location.hash.slice(1)
+    if (!isPairing(code)) return
+    stopScan()
     closeSession()
-    localStorage.removeItem('dsh-remote:last')
     showHome()
+    void startPairing(code, $('home-error'))
   })
   $('chip-retry').addEventListener('click', () => { current?.remote.retryNow() })
   $('chip').addEventListener('click', (event) => {
     if (event.target.closest('button')) return
     const text = $('chip').querySelector('.text')
-    if (text.hidden) setChip($('chip').dataset.state, text.textContent, true)
+    if (!text.hidden) return
+    setChip($('chip').dataset.state, text.textContent)
+    restChip(3000)
   })
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') current?.remote.retryNow() })
   window.addEventListener('online', () => { current?.remote.retryNow() })
