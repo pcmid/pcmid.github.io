@@ -5,7 +5,10 @@
  * The device key is a non-extractable WebCrypto key stored in IndexedDB, so script on this origin
  * can use it but cannot copy it. Serve the launcher from an origin that hosts nothing else.
  */
-import { RemoteHost, TunnelError, createIdentity, decodePairing, pairDevice } from './tunnel.js'
+// index.html loads this file as `app.js?v=<version>`; the same query reaches the other scripts, so a
+// CDN that caches script files for hours cannot pair a new app.js with an old tunnel.js.
+const RELEASE = new URL(import.meta.url).search
+const { RemoteHost, TunnelError, createIdentity, decodePairing, pairDevice } = await import(`./tunnel.js${RELEASE}`)
 
 const TEXT = {
   en: {
@@ -469,7 +472,7 @@ let jsQRLoading
 function loadJsQR() {
   jsQRLoading ??= new Promise((resolve, reject) => {
     const script = document.createElement('script')
-    script.src = new URL('./vendor/jsQR.js', import.meta.url).href
+    script.src = new URL(`./vendor/jsQR.js${RELEASE}`, import.meta.url).href
     script.onload = () => { typeof window.jsQR === 'function' ? resolve(window.jsQR) : reject(new Error(t('noCamera'))) }
     script.onerror = () => { jsQRLoading = undefined; reject(new Error(t('noCamera'))) }
     document.head.append(script)

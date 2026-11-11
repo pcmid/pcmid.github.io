@@ -112,6 +112,7 @@
     <div id="chip" data-state="connecting"><span class="dot"></span><span class="text"></span><button id="chip-retry" type="button" data-text="retry" hidden></button><button id="chip-leave" type="button" data-text="leave"></button></div>
   </div>
   <noscript>DSH Remote needs JavaScript.</noscript>
-  <script type="module" src="./app.js"></script>
+  <!-- Raise ?v with the plugin version: index.html is the only launcher file a CDN must not cache. -->
+  <script type="module" src="./app.js?v=0.2.2"></script>
 </body>
 </html>
