@@ -50,6 +50,11 @@
     .error { color: var(--danger); font-size: 13px; margin: 0; overflow-wrap: anywhere; }
     .note { font-size: 12px; color: var(--muted); border-left: 3px solid var(--warn); padding: 2px 0 2px 10px; margin: 0; }
     ol.steps { margin: 0; padding-left: 20px; color: var(--muted); font-size: 13px; }
+    form.row input { flex: 1; min-width: 0; }
+    #scanner { position: relative; border-radius: 10px; overflow: hidden; background: #000; aspect-ratio: 1; }
+    #scanner video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    #scanner .frame { position: absolute; inset: 18%; border: 2px solid rgb(255 255 255 / 0.85); border-radius: 12px; box-shadow: 0 0 0 100vmax rgb(0 0 0 / 0.35); }
+    #scanner button { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); background: rgb(0 0 0 / 0.55); border-color: transparent; color: #fff; }
     #session { position: fixed; inset: 0; background: var(--bg); }
     #session iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: var(--bg); }
     #chip { position: fixed; z-index: 2; top: max(8px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; max-width: calc(100% - 24px);
@@ -83,6 +88,21 @@
           <ol class="steps"><li data-text="step1"></li><li data-text="step2"></li><li data-text="step3"></li></ol>
         </div>
         <p class="error" id="home-error" role="alert" hidden></p>
+      </section>
+      <section id="add-card" class="card">
+        <h2 data-text="addTitle"></h2>
+        <p class="muted" data-text="addIntro"></p>
+        <form id="add-form" class="row">
+          <input id="pair-input" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go" data-placeholder="pastePlaceholder">
+          <button type="submit" data-text="next"></button>
+        </form>
+        <button id="scan" type="button" data-text="scan" hidden></button>
+        <div id="scanner" hidden>
+          <video id="scan-video" playsinline muted></video>
+          <div class="frame"></div>
+          <button id="scan-cancel" type="button" data-text="cancel"></button>
+        </div>
+        <p class="error" id="add-error" role="alert" hidden></p>
       </section>
       <p class="muted" data-text="footer"></p>
     </div>

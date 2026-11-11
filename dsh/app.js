@@ -20,7 +20,16 @@ const TEXT = {
     emptyIntro: 'No DSH is paired with this browser yet.',
     step1: 'In DSH, open Settings → Remote access.',
     step2: 'Turn on remote access and choose “Pair a device”.',
-    step3: 'Scan the QR code with this device, or open the pairing link here.',
+    step3: 'Scan the QR code with this device, or paste the pairing link below.',
+    addTitle: 'Add a DSH',
+    addIntro: 'Paste the pairing link from DSH Settings → Remote access, or scan its QR code.',
+    pastePlaceholder: 'Pairing link',
+    next: 'Next',
+    scan: 'Scan QR code',
+    invalidCode: 'This is not a DSH pairing link. Copy the whole link from DSH settings.',
+    notPairingQr: 'This QR code is not a DSH pairing link.',
+    noCamera: 'This browser cannot open the camera. Paste the pairing link instead.',
+    cameraDenied: 'Camera access was denied. Allow it in the browser settings, or paste the pairing link.',
     open: 'Open',
     forget: 'Remove',
     forgetConfirm: 'Remove “{host}” from this browser? Remove the device in DSH Settings as well.',
@@ -50,7 +59,16 @@ const TEXT = {
     emptyIntro: '这个浏览器还没有配对任何 DSH。',
     step1: '在 DSH 中打开“设置 → 远程访问”。',
     step2: '开启远程访问，然后选择“配对新设备”。',
-    step3: '用这台设备扫描二维码，或在这里打开配对链接。',
+    step3: '用这台设备扫描二维码，或在下方粘贴配对链接。',
+    addTitle: '添加 DSH',
+    addIntro: '粘贴 DSH“设置 → 远程访问”中生成的配对链接，或扫描它的二维码。',
+    pastePlaceholder: '配对链接',
+    next: '下一步',
+    scan: '扫描二维码',
+    invalidCode: '这不是 DSH 配对链接，请从 DSH 设置中复制完整的链接。',
+    notPairingQr: '这个二维码不是 DSH 配对链接。',
+    noCamera: '此浏览器无法打开摄像头，请改为粘贴配对链接。',
+    cameraDenied: '没有摄像头权限。请在浏览器设置中允许，或改为粘贴配对链接。',
     open: '打开',
     forget: '移除',
     forgetConfirm: '要从此浏览器移除“{host}”吗？也请在 DSH 设置中移除这台设备。',
@@ -86,6 +104,7 @@ const $ = (id) => document.getElementById(id)
 function applyStaticText() {
   document.documentElement.lang = LANG === 'zh' ? 'zh-CN' : 'en'
   for (const element of document.querySelectorAll('[data-text]')) element.textContent = t(element.dataset.text)
+  for (const element of document.querySelectorAll('[data-placeholder]')) element.placeholder = t(element.dataset.placeholder)
 }
 
 function showError(element, message) {
@@ -371,17 +390,26 @@ function closeSession() {
   session.frame.remove()
 }
 
-async function startPairing(code) {
+/**
+ * Show the pairing card for a code, link, or scanned QR text.
+ * @param {string} code - pairing code or link.
+ * @param {HTMLElement} errorElement - where to report a malformed code.
+ * @returns {Promise<boolean>} whether the code was a pairing offer.
+ */
+async function startPairing(code, errorElement) {
   let pairing
   try {
     pairing = decodePairing(code)
-  } catch (error) {
-    showError($('home-error'), error.message)
-    return
+  } catch {
+    showError(errorElement, t('invalidCode'))
+    return false
   }
+  showError(errorElement, '')
   const card = $('pair-card')
   card.hidden = false
   const hostsCard = $('hosts-card')
+  const addCard = $('add-card')
+  addCard.hidden = true
   hostsCard.hidden = (await listHosts()).length === 0
   $('pair-intro').textContent = t('pairIntro', { host: pairing.hostName || pairing.serverId.slice(0, 8), time: new Date(pairing.expiresAt).toLocaleTimeString() })
   const nameInput = $('device-name')
@@ -391,6 +419,7 @@ async function startPairing(code) {
   $('pair-cancel').onclick = () => {
     card.hidden = true
     hostsCard.hidden = false
+    addCard.hidden = false
     history.replaceState(null, '', location.pathname + location.search)
   }
   confirmButton.onclick = async () => {
@@ -415,6 +444,8 @@ async function startPairing(code) {
       history.replaceState(null, '', location.pathname + location.search)
       card.hidden = true
       hostsCard.hidden = false
+      addCard.hidden = false
+      $('pair-input').value = ''
       await renderHosts()
       void openSession(host)
     } catch (error) {
@@ -423,6 +454,104 @@ async function startPairing(code) {
       confirmButton.disabled = false
       confirmButton.textContent = t('pairAction')
     }
+  }
+  return true
+}
+
+// ---------------------------------------------------------------------------
+// QR scanning
+// ---------------------------------------------------------------------------
+
+let scanning
+let jsQRLoading
+
+/** jsQR (Apache-2.0, vendor/jsQR.js) for browsers without a native QR BarcodeDetector, such as Safari. */
+function loadJsQR() {
+  jsQRLoading ??= new Promise((resolve, reject) => {
+    const script = document.createElement('script')
+    script.src = new URL('./vendor/jsQR.js', import.meta.url).href
+    script.onload = () => { typeof window.jsQR === 'function' ? resolve(window.jsQR) : reject(new Error(t('noCamera'))) }
+    script.onerror = () => { jsQRLoading = undefined; reject(new Error(t('noCamera'))) }
+    document.head.append(script)
+  })
+  return jsQRLoading
+}
+
+/** @returns {Promise<(video: HTMLVideoElement) => Promise<string | undefined>>} a QR reader for video frames. */
+async function createReader() {
+  try {
+    if ((await window.BarcodeDetector?.getSupportedFormats())?.includes('qr_code')) {
+      const detector = new window.BarcodeDetector({ formats: ['qr_code'] })
+      return async (video) => (await detector.detect(video))[0]?.rawValue
+    }
+  } catch { /* fall back to jsQR */ }
+  const decode = await loadJsQR()
+  const canvas = document.createElement('canvas')
+  const context = canvas.getContext('2d', { willReadFrequently: true })
+  return async (video) => {
+    const scale = Math.min(1, 640 / Math.max(video.videoWidth, video.videoHeight))
+    canvas.width = Math.round(video.videoWidth * scale)
+    canvas.height = Math.round(video.videoHeight * scale)
+    context.drawImage(video, 0, 0, canvas.width, canvas.height)
+    const image = context.getImageData(0, 0, canvas.width, canvas.height)
+    return decode(image.data, image.width, image.height, { inversionAttempts: 'attemptBoth' })?.data
+  }
+}
+
+function isPairing(text) {
+  try {
+    decodePairing(text)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function stopScan() {
+  const session = scanning
+  scanning = undefined
+  if (session === undefined) return
+  for (const track of session.stream.getTracks()) track.stop()
+  $('scan-video').srcObject = null
+  $('scanner').hidden = true
+  $('scan').hidden = false
+}
+
+async function startScan() {
+  const error = $('add-error')
+  showError(error, '')
+  stopScan()
+  let stream
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
+  } catch (failure) {
+    showError(error, failure?.name === 'NotAllowedError' || failure?.name === 'SecurityError' ? t('cameraDenied') : t('noCamera'))
+    return
+  }
+  const session = { stream }
+  scanning = session
+  const video = $('scan-video')
+  video.srcObject = stream
+  $('scan').hidden = true
+  $('scanner').hidden = false
+  try {
+    await video.play()
+    const read = await createReader()
+    while (scanning === session) {
+      const text = video.readyState >= 2 && video.videoWidth > 0 ? await read(video) : undefined
+      if (scanning !== session) return
+      if (text && isPairing(text)) {
+        stopScan()
+        await startPairing(text, error)
+        return
+      }
+      if (text) showError(error, t('notPairingQr'))
+      await new Promise((resolve) => { setTimeout(resolve, 200) })
+    }
+  } catch (failure) {
+    if (scanning !== session) return
+    stopScan()
+    showError(error, failure?.message ?? String(failure))
   }
 }
 
@@ -441,6 +570,22 @@ async function main() {
   })
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') current?.remote.retryNow() })
   window.addEventListener('online', () => { current?.remote.retryNow() })
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') stopScan() })
+  $('add-form').addEventListener('submit', (event) => {
+    event.preventDefault()
+    stopScan()
+    void startPairing($('pair-input').value, $('add-error'))
+  })
+  $('pair-input').addEventListener('paste', (event) => {
+    // A pasted complete link goes straight to the pairing card.
+    const text = event.clipboardData?.getData('text') ?? ''
+    if (!text.includes('k=') || !text.includes('s=')) return
+    stopScan()
+    void startPairing(text, $('add-error'))
+  })
+  $('scan').hidden = typeof navigator.mediaDevices?.getUserMedia !== 'function'
+  $('scan').addEventListener('click', () => { void startScan() })
+  $('scan-cancel').addEventListener('click', stopScan)
   if (globalThis.crypto?.subtle === undefined) {
     $('home').hidden = false
     showError($('home-error'), t('noCrypto'))
@@ -449,7 +594,7 @@ async function main() {
   showHome()
   const code = location.hash.slice(1)
   if (code.includes('k=') && code.includes('s=')) {
-    await startPairing(code)
+    await startPairing(code, $('home-error'))
     return
   }
   const last = localStorage.getItem('dsh-remote:last')
