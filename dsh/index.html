@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#16181c" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="DSH Remote">
+  <meta name="referrer" content="no-referrer">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" type="image/svg+xml" href="./icon.svg">
+  <link rel="apple-touch-icon" href="./icon.svg">
+  <title>DSH Remote</title>
+  <style>
+    :root {
+      --bg: #f6f7f9; --card: #ffffff; --text: #1d1f23; --muted: #6b7079; --line: #e3e5e9;
+      --accent: #2f6fe4; --accent-text: #ffffff; --danger: #d23f3f; --ok: #1f9d55; --warn: #c98a12;
+      font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #16181c; --card: #1f2227; --text: #eceef1; --muted: #9aa0aa; --line: #30343b; --accent: #5b8ff0; }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); }
+    body { -webkit-text-size-adjust: 100%; }
+    [hidden] { display: none !important; }
+    main { min-height: 100%; display: flex; justify-content: center; padding: max(24px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom)); }
+    .column { width: 100%; max-width: 440px; display: flex; flex-direction: column; gap: 16px; }
+    header.brand { display: flex; align-items: center; gap: 10px; padding: 8px 4px 4px; }
+    header.brand img { width: 32px; height: 32px; }
+    header.brand h1 { margin: 0; font-size: 20px; font-weight: 600; }
+    .card { background: var(--card); border: 0.5px solid var(--line); border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+    .card h2 { margin: 0; font-size: 16px; font-weight: 600; }
+    .muted { color: var(--muted); font-size: 13px; margin: 0; }
+    .row { display: flex; align-items: center; gap: 12px; }
+    .row .grow { flex: 1; min-width: 0; }
+    .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sub { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    label.field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+    input[type=text] { font: inherit; color: var(--text); background: transparent; border: 0.5px solid var(--line); border-radius: 10px; padding: 10px 12px; min-height: 44px; }
+    input[type=text]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    button { font: inherit; border: 0.5px solid var(--line); background: transparent; color: var(--text); border-radius: 10px; padding: 0 16px; min-height: 40px; cursor: pointer; }
+    button.primary { background: var(--accent); border-color: transparent; color: var(--accent-text); font-weight: 600; min-height: 44px; }
+    button.danger { color: var(--danger); }
+    button:disabled { opacity: 0.5; cursor: default; }
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .error { color: var(--danger); font-size: 13px; margin: 0; overflow-wrap: anywhere; }
+    .note { font-size: 12px; color: var(--muted); border-left: 3px solid var(--warn); padding: 2px 0 2px 10px; margin: 0; }
+    ol.steps { margin: 0; padding-left: 20px; color: var(--muted); font-size: 13px; }
+    #session { position: fixed; inset: 0; background: var(--bg); }
+    #session iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: var(--bg); }
+    #chip { position: fixed; z-index: 2; top: max(8px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; max-width: calc(100% - 24px);
+      padding: 6px 8px 6px 12px; border-radius: 999px; background: var(--card); border: 0.5px solid var(--line); box-shadow: 0 4px 16px rgb(0 0 0 / 0.18); font-size: 13px; }
+    #chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); flex: none; }
+    #chip[data-state=connected] .dot { background: var(--ok); }
+    #chip[data-state=rejected] .dot, #chip[data-state=failed] .dot { background: var(--danger); }
+    #chip .text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #chip[data-collapsed] { padding: 6px; gap: 0; cursor: pointer; opacity: 0.85; }
+    #chip button { min-height: 28px; padding: 0 10px; border-radius: 999px; font-size: 12px; }
+    #veil { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <main id="home" hidden>
+    <div class="column">
+      <header class="brand"><img src="./icon.svg" alt=""><h1>DSH Remote</h1></header>
+      <section id="pair-card" class="card" hidden>
+        <h2 data-text="pairTitle"></h2>
+        <p class="muted" id="pair-intro"></p>
+        <label class="field"><span data-text="deviceName"></span><input id="device-name" type="text" maxlength="80" autocomplete="off"></label>
+        <p class="note" data-text="pairRisk"></p>
+        <p class="error" id="pair-error" role="alert" hidden></p>
+        <div class="row"><button id="pair-cancel" type="button" data-text="cancel"></button><span class="grow"></span><button id="pair-confirm" class="primary" type="button" data-text="pairAction"></button></div>
+      </section>
+      <section id="hosts-card" class="card">
+        <h2 data-text="hostsTitle"></h2>
+        <div id="hosts"></div>
+        <div id="empty" hidden>
+          <p class="muted" data-text="emptyIntro"></p>
+          <ol class="steps"><li data-text="step1"></li><li data-text="step2"></li><li data-text="step3"></li></ol>
+        </div>
+        <p class="error" id="home-error" role="alert" hidden></p>
+      </section>
+      <p class="muted" data-text="footer"></p>
+    </div>
+  </main>
+  <div id="session" hidden>
+    <div id="veil"></div>
+    <div id="chip" data-state="connecting"><span class="dot"></span><span class="text"></span><button id="chip-retry" type="button" data-text="retry" hidden></button><button id="chip-leave" type="button" data-text="leave"></button></div>
+  </div>
+  <noscript>DSH Remote needs JavaScript.</noscript>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
