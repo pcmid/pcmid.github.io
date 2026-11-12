@@ -347,7 +347,117 @@ async function renderHosts() {
 function showHome() {
   $('session').hidden = true
   $('home').hidden = false
+  setChrome(undefined)
   void renderHosts()
+}
+
+// ---------------------------------------------------------------------------
+// Window chrome
+// ---------------------------------------------------------------------------
+
+// A home-screen web app paints its status bar with theme-color. While a DSH is shown, the launcher
+// (status bar, background, chip) follows that DSH's theme, which DSH settings can fix regardless of
+// the phone's appearance; the home page follows the phone.
+const SYSTEM_DARK = matchMedia('(prefers-color-scheme: dark)')
+const CHROME_KEY = 'dsh-remote:chrome:'
+let themeMeta
+/** @type {{ color: string, dark: boolean } | undefined} */
+let shownChrome
+
+function applyChrome() {
+  if (themeMeta === undefined) {
+    // One meta whose content changes: the page's media-scoped pair can only follow the phone.
+    for (const meta of document.querySelectorAll('meta[name="theme-color"]')) meta.remove()
+    themeMeta = document.createElement('meta')
+    themeMeta.name = 'theme-color'
+    document.head.append(themeMeta)
+  }
+  const root = document.documentElement
+  if (shownChrome === undefined) {
+    delete root.dataset.theme
+    root.style.removeProperty('--bg')
+  } else {
+    root.dataset.theme = shownChrome.dark ? 'dark' : 'light'
+    root.style.setProperty('--bg', shownChrome.color)
+  }
+  themeMeta.content = getComputedStyle(root).getPropertyValue('--bg').trim()
+}
+
+function setChrome(chrome) {
+  shownChrome = chrome
+  applyChrome()
+}
+
+/** The chrome a host's page had last time, so a reopened DSH does not flash the phone's theme. */
+function savedChrome(serverId) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(CHROME_KEY + serverId) ?? 'null')
+    return typeof saved?.color === 'string' && typeof saved.dark === 'boolean' ? saved : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** The opaque background at the top edge of the DSH page, and whether its theme is dark. */
+function readChrome(frame) {
+  let doc
+  try {
+    doc = frame.contentDocument
+  } catch {
+    return undefined
+  }
+  const win = doc?.defaultView
+  if (!doc?.body || !win) return undefined
+  const opaque = (element) => {
+    const color = win.getComputedStyle(element).backgroundColor
+    if (!color || color === 'transparent') return undefined
+    const alpha = /^rgba\([^)]*,\s*([\d.]+)\)$/.exec(color)
+    return alpha !== null && Number(alpha[1]) < 1 ? undefined : color
+  }
+  let color
+  for (let element = doc.elementFromPoint(win.innerWidth / 2, 0); element && color === undefined; element = element.parentElement) color = opaque(element)
+  color ??= opaque(doc.body) ?? opaque(doc.documentElement)
+  if (color === undefined) return undefined
+  // Dark by the color itself; a color the browser reports in another notation falls back to
+  // DSH's dark-theme mark on the body.
+  const rgb = /^rgba?\((\d+), (\d+), (\d+)/.exec(color)
+  const dark = rgb !== null
+    ? 0.2126 * Number(rgb[1]) + 0.7152 * Number(rgb[2]) + 0.0722 * Number(rgb[3]) < 128
+    : doc.body.hasAttribute('data-ds-dark-theme')
+  return { color, dark }
+}
+
+/** Follow the theme of the page just loaded in the session's frame. */
+function watchChrome(session) {
+  session.chromeObserver?.disconnect()
+  for (const timer of session.chromeTimers) clearTimeout(timer)
+  let scheduled = false
+  const update = () => {
+    scheduled = false
+    if (current !== session) return
+    const chrome = readChrome(session.frame)
+    if (chrome === undefined || (chrome.color === shownChrome?.color && chrome.dark === shownChrome?.dark)) return
+    setChrome(chrome)
+    try {
+      localStorage.setItem(CHROME_KEY + session.host.serverId, JSON.stringify(chrome))
+    } catch { /* storage unavailable: the next open starts from the phone's theme */ }
+  }
+  session.updateChrome = () => {
+    if (scheduled) return
+    scheduled = true
+    requestAnimationFrame(update)
+  }
+  try {
+    const doc = session.frame.contentDocument
+    if (doc?.body) {
+      // A theme switch in DSH changes attributes of <html> or <body>.
+      session.chromeObserver = new MutationObserver(session.updateChrome)
+      session.chromeObserver.observe(doc.documentElement, { attributes: true })
+      session.chromeObserver.observe(doc.body, { attributes: true })
+    }
+  } catch { /* not the DSH page: an error page of the service worker */ }
+  // DSH lays out its header after load; read again once it has rendered.
+  session.chromeTimers = [0, 1000, 3000].map((delay) => setTimeout(session.updateChrome, delay))
 }
 
 /**
@@ -455,6 +565,7 @@ async function openSession(host) {
   frame.style.visibility = 'hidden'
   frame.addEventListener('load', () => {
     frame.style.visibility = 'visible'
+    watchChrome(session)
     clearTimeout(session.bridgeTimer)
     session.bridgeTimer = setTimeout(() => {
       if (session.bridge !== 'waiting') return
@@ -463,8 +574,12 @@ async function openSession(host) {
     }, BRIDGE_WAIT_MS)
   })
   // bridge: 'waiting' until the page says hello, 'ready' after, 'none' when it never did.
-  const session = { host, remote, frame, loaded: false, troubled: false, quietTimer: undefined, state: 'connecting', bridge: 'waiting', bridgeTimer: undefined }
+  const session = {
+    host, remote, frame, loaded: false, troubled: false, quietTimer: undefined, state: 'connecting', bridge: 'waiting', bridgeTimer: undefined,
+    chromeObserver: undefined, chromeTimers: [], updateChrome: undefined,
+  }
   current = session
+  setChrome(savedChrome(host.serverId))
   setChip('connecting', t('connecting', { host: label }))
   $('veil').textContent = t('loading')
   $('session').append(frame)
@@ -481,6 +596,8 @@ function closeSession() {
   clearTimeout(session.bridgeTimer)
   clearTimeout(session.quietTimer)
   clearTimeout(chipTimer)
+  session.chromeObserver?.disconnect()
+  for (const timer of session.chromeTimers) clearTimeout(timer)
   session.remote.stop()
   session.frame.remove()
 }
@@ -542,6 +659,7 @@ async function onBridgeMessage(event) {
   const data = event.data
   if (session === undefined || event.source !== session.frame.contentWindow || data?.channel !== BRIDGE || data.v !== BRIDGE_VERSION) return
   if (data.type === 'hello') {
+    session.updateChrome?.()
     if (session.bridge !== 'ready') {
       session.bridge = 'ready'
       if ($('chip').dataset.collapsed !== undefined) restChip()
@@ -732,6 +850,8 @@ async function startScan() {
 
 async function main() {
   applyStaticText()
+  applyChrome()
+  SYSTEM_DARK.addEventListener('change', applyChrome)
   $('chip-leave').addEventListener('click', leave)
   window.addEventListener('message', (event) => { void onBridgeMessage(event) })
   window.addEventListener('hashchange', () => {

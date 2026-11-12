@@ -23,6 +23,9 @@
     @media (prefers-color-scheme: dark) {
       :root { --bg: #16181c; --card: #1f2227; --text: #eceef1; --muted: #9aa0aa; --line: #30343b; --accent: #5b8ff0; }
     }
+    /* While a DSH is shown, the launcher follows that DSH's theme instead of the system's (app.js). */
+    :root[data-theme=light] { color-scheme: light; --bg: #f6f7f9; --card: #ffffff; --text: #1d1f23; --muted: #6b7079; --line: #e3e5e9; --accent: #2f6fe4; }
+    :root[data-theme=dark] { color-scheme: dark; --bg: #16181c; --card: #1f2227; --text: #eceef1; --muted: #9aa0aa; --line: #30343b; --accent: #5b8ff0; }
     * { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); }
     body { -webkit-text-size-adjust: 100%; }
@@ -113,6 +116,6 @@
   </div>
   <noscript>DSH Remote needs JavaScript.</noscript>
   <!-- Raise ?v with the plugin version: index.html is the only launcher file a CDN must not cache. -->
-  <script type="module" src="./app.js?v=0.2.5"></script>
+  <script type="module" src="./app.js?v=0.2.6"></script>
 </body>
 </html>
