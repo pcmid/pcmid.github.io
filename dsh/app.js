@@ -360,6 +360,8 @@ function showHome() {
 // the phone's appearance; the home page follows the phone.
 const SYSTEM_DARK = matchMedia('(prefers-color-scheme: dark)')
 const CHROME_KEY = 'dsh-remote:chrome:'
+const REVEAL_LIMIT_MS = 20_000
+const SETTLE_MS = 600
 let themeMeta
 /** @type {{ color: string, dark: boolean } | undefined} */
 let shownChrome
@@ -427,14 +429,60 @@ function readChrome(frame) {
   return { color, dark }
 }
 
-/** Follow the theme of the page just loaded in the session's frame. */
-function watchChrome(session) {
+/**
+ * Whether the DSH page in the frame may be shown: `show` now, `matched` once that lasts SETTLE_MS,
+ * or `wait`. DSH paints its saved theme at once, but its client starts from the phone's appearance
+ * until the saved preference arrives through the tunnel, which on a slow link shows as a
+ * light-dark flash. The page waits until its client runs (the bridge hello) and has shown the theme
+ * it booted with for a moment.
+ */
+function pageState(session) {
+  let doc
+  try {
+    doc = session.frame.contentDocument
+  } catch {
+    return 'show'
+  }
+  const source = doc?.documentElement?.dataset.dsThemeSource
+  // Not a DSH page (an error page), or a DSH whose client never answers: show it as it is.
+  if (source === undefined || session.bridge === 'none') return 'show'
+  if (session.bridge === 'waiting') return 'wait'
+  if (source !== 'light' && source !== 'dark' && source !== 'system') return 'matched'
+  const dark = source === 'dark' || (source === 'system' && doc.defaultView.matchMedia('(prefers-color-scheme: dark)').matches)
+  return doc.body?.hasAttribute('data-ds-dark-theme') === dark ? 'matched' : 'wait'
+}
+
+/**
+ * Follow the page just loaded in the session's frame: show the first page once it settles, then
+ * keep the window chrome on the page's theme.
+ */
+function watchPage(session) {
   session.chromeObserver?.disconnect()
   for (const timer of session.chromeTimers) clearTimeout(timer)
   let scheduled = false
+  const reveal = () => {
+    session.revealed = true
+    session.frame.style.visibility = 'visible'
+  }
   const update = () => {
     scheduled = false
     if (current !== session) return
+    if (!session.revealed) {
+      const state = pageState(session)
+      if (state === 'wait') {
+        session.matchedSince = undefined
+        return
+      }
+      if (state === 'matched') {
+        session.matchedSince ??= performance.now()
+        const left = SETTLE_MS - (performance.now() - session.matchedSince)
+        if (left > 0) {
+          session.chromeTimers.push(setTimeout(session.updatePage, left + 10))
+          return
+        }
+      }
+      reveal()
+    }
     const chrome = readChrome(session.frame)
     if (chrome === undefined || (chrome.color === shownChrome?.color && chrome.dark === shownChrome?.dark)) return
     setChrome(chrome)
@@ -442,7 +490,7 @@ function watchChrome(session) {
       localStorage.setItem(CHROME_KEY + session.host.serverId, JSON.stringify(chrome))
     } catch { /* storage unavailable: the next open starts from the phone's theme */ }
   }
-  session.updateChrome = () => {
+  session.updatePage = () => {
     if (scheduled) return
     scheduled = true
     requestAnimationFrame(update)
@@ -451,13 +499,19 @@ function watchChrome(session) {
     const doc = session.frame.contentDocument
     if (doc?.body) {
       // A theme switch in DSH changes attributes of <html> or <body>.
-      session.chromeObserver = new MutationObserver(session.updateChrome)
+      session.chromeObserver = new MutationObserver(session.updatePage)
       session.chromeObserver.observe(doc.documentElement, { attributes: true })
       session.chromeObserver.observe(doc.body, { attributes: true })
     }
   } catch { /* not the DSH page: an error page of the service worker */ }
-  // DSH lays out its header after load; read again once it has rendered.
-  session.chromeTimers = [0, 1000, 3000].map((delay) => setTimeout(session.updateChrome, delay))
+  // DSH lays out its header after load; read again once it has rendered. A page whose theme never
+  // matches what it booted with (the preference changed meanwhile) is shown after the last one.
+  session.chromeTimers = [0, 1000, 3000].map((delay) => setTimeout(session.updatePage, delay))
+  session.chromeTimers.push(setTimeout(() => {
+    if (session.revealed || current !== session) return
+    reveal()
+    session.updatePage()
+  }, REVEAL_LIMIT_MS))
 }
 
 /**
@@ -564,19 +618,22 @@ async function openSession(host) {
   frame.allow = 'clipboard-read; clipboard-write; microphone; fullscreen'
   frame.style.visibility = 'hidden'
   frame.addEventListener('load', () => {
-    frame.style.visibility = 'visible'
-    watchChrome(session)
+    // The frame's first document is about:blank, from before the tunnel connected.
+    if (!session.loaded) return
+    watchPage(session)
     clearTimeout(session.bridgeTimer)
     session.bridgeTimer = setTimeout(() => {
       if (session.bridge !== 'waiting') return
       session.bridge = 'none'
-      if (current === session) restChip()
+      if (current !== session) return
+      restChip()
+      session.updatePage()
     }, BRIDGE_WAIT_MS)
   })
   // bridge: 'waiting' until the page says hello, 'ready' after, 'none' when it never did.
   const session = {
     host, remote, frame, loaded: false, troubled: false, quietTimer: undefined, state: 'connecting', bridge: 'waiting', bridgeTimer: undefined,
-    chromeObserver: undefined, chromeTimers: [], updateChrome: undefined,
+    revealed: false, matchedSince: undefined, chromeObserver: undefined, chromeTimers: [], updatePage: undefined,
   }
   current = session
   setChrome(savedChrome(host.serverId))
@@ -659,7 +716,7 @@ async function onBridgeMessage(event) {
   const data = event.data
   if (session === undefined || event.source !== session.frame.contentWindow || data?.channel !== BRIDGE || data.v !== BRIDGE_VERSION) return
   if (data.type === 'hello') {
-    session.updateChrome?.()
+    session.updatePage?.()
     if (session.bridge !== 'ready') {
       session.bridge = 'ready'
       if ($('chip').dataset.collapsed !== undefined) restChip()
