@@ -228,7 +228,9 @@ async function serveFetch(request, port) {
       responseHeaders = responseHeaders.filter(([name]) => name !== 'content-encoding' && name !== 'content-length')
     }
     if (body !== null && request.mode === 'navigate' && /text\/html/i.test(headerValue(responseHeaders, 'content-type') ?? '')) {
-      body = streamOf(encoder.encode(injectCarrier(await new Response(body).text())))
+      const html = await new Response(body).text()
+      session.bootPreference = bootPreference(html)
+      body = streamOf(encoder.encode(injectCarrier(html)))
       responseHeaders = responseHeaders.filter(([name]) => name !== 'content-length')
     }
     port.postMessage({ type: 'head', status: response.status, statusText: response.statusText, headers: responseHeaders })
@@ -361,7 +363,7 @@ function showHome() {
 const SYSTEM_DARK = matchMedia('(prefers-color-scheme: dark)')
 const CHROME_KEY = 'dsh-remote:chrome:'
 const REVEAL_LIMIT_MS = 20_000
-const SETTLE_MS = 600
+const SETTLE_MS = 300
 let themeMeta
 /** @type {{ color: string, dark: boolean } | undefined} */
 let shownChrome
@@ -433,8 +435,8 @@ function readChrome(frame) {
  * Whether the DSH page in the frame may be shown: `show` now, `matched` once that lasts SETTLE_MS,
  * or `wait`. DSH paints its saved theme at once, but its client starts from the phone's appearance
  * until the saved preference arrives through the tunnel, which on a slow link shows as a
- * light-dark flash. The page waits until its client runs (the bridge hello) and has shown the theme
- * it booted with for a moment.
+ * light-dark flash. The page waits until DSH's client has applied a theme (it then adds its own
+ * theme-color meta) and that theme is the one the page booted with.
  */
 function pageState(session) {
   let doc
@@ -443,13 +445,23 @@ function pageState(session) {
   } catch {
     return 'show'
   }
-  const source = doc?.documentElement?.dataset.dsThemeSource
-  // Not a DSH page (an error page), or a DSH whose client never answers: show it as it is.
-  if (source === undefined || session.bridge === 'none') return 'show'
-  if (session.bridge === 'waiting') return 'wait'
-  if (source !== 'light' && source !== 'dark' && source !== 'system') return 'matched'
-  const dark = source === 'dark' || (source === 'system' && doc.defaultView.matchMedia('(prefers-color-scheme: dark)').matches)
+  // Not a DSH page (an error page): show it as it is.
+  if (doc?.documentElement?.dataset.dsThemeSource === undefined) return 'show'
+  if (doc.head?.querySelector('meta[name="theme-color"]') == null) return 'wait'
+  const preference = session.bootPreference
+  if (preference !== 'light' && preference !== 'dark' && preference !== 'system') return 'matched'
+  const dark = preference === 'dark' || (preference === 'system' && doc.defaultView.matchMedia('(prefers-color-scheme: dark)').matches)
   return doc.body?.hasAttribute('data-ds-dark-theme') === dark ? 'matched' : 'wait'
+}
+
+/** The theme preference DSH embedded in its page (its boot script), or undefined. */
+function bootPreference(html) {
+  const match = /\bconst preference = ("(?:[^"\\]|\\.)*")[^]{0,400}?dsThemeSource = preference/.exec(html)
+  try {
+    return match === null ? undefined : JSON.parse(match[1])
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -462,7 +474,7 @@ function watchPage(session) {
   let scheduled = false
   const reveal = () => {
     session.revealed = true
-    session.frame.style.visibility = 'visible'
+    session.frame.removeAttribute('data-pending')
   }
   const update = () => {
     scheduled = false
@@ -498,10 +510,11 @@ function watchPage(session) {
   try {
     const doc = session.frame.contentDocument
     if (doc?.body) {
-      // A theme switch in DSH changes attributes of <html> or <body>.
+      // DSH applies a theme through attributes of <html> and <body>, and adds its theme-color meta.
       session.chromeObserver = new MutationObserver(session.updatePage)
       session.chromeObserver.observe(doc.documentElement, { attributes: true })
       session.chromeObserver.observe(doc.body, { attributes: true })
+      if (doc.head) session.chromeObserver.observe(doc.head, { childList: true })
     }
   } catch { /* not the DSH page: an error page of the service worker */ }
   // DSH lays out its header after load; read again once it has rendered. A page whose theme never
@@ -616,7 +629,9 @@ async function openSession(host) {
   const frame = document.createElement('iframe')
   frame.title = label
   frame.allow = 'clipboard-read; clipboard-write; microphone; fullscreen'
-  frame.style.visibility = 'hidden'
+  // Hidden by opacity, not visibility: a transparent frame keeps painting, so it has its content
+  // ready when it fades in; a visibility-hidden frame may show blank for a moment first.
+  frame.dataset.pending = ''
   frame.addEventListener('load', () => {
     // The frame's first document is about:blank, from before the tunnel connected.
     if (!session.loaded) return
@@ -633,7 +648,7 @@ async function openSession(host) {
   // bridge: 'waiting' until the page says hello, 'ready' after, 'none' when it never did.
   const session = {
     host, remote, frame, loaded: false, troubled: false, quietTimer: undefined, state: 'connecting', bridge: 'waiting', bridgeTimer: undefined,
-    revealed: false, matchedSince: undefined, chromeObserver: undefined, chromeTimers: [], updatePage: undefined,
+    revealed: false, matchedSince: undefined, bootPreference: undefined, chromeObserver: undefined, chromeTimers: [], updatePage: undefined,
   }
   current = session
   setChrome(savedChrome(host.serverId))
