@@ -191,10 +191,43 @@ function streamOf(bytes) {
   return new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close() } })
 }
 
-function injectCarrier(html) {
+function injectCarrier(html, prefix = '') {
+  const scripts = prefix + CARRIER
   const head = /<head(\s[^>]*)?>/i.exec(html)
-  if (head === null) return CARRIER + html
-  return html.slice(0, head.index + head[0].length) + CARRIER + html.slice(head.index + head[0].length)
+  if (head === null) return scripts + html
+  return html.slice(0, head.index + head[0].length) + scripts + html.slice(head.index + head[0].length)
+}
+
+const SESSION_ID = /^[\w.:-]{1,200}$/
+
+/**
+ * The Session last opened in any window of the DSH (the remote-relay plugin's Host record), asked
+ * through the tunnel while the page loads, or undefined.
+ */
+async function fetchLastSession(remote) {
+  try {
+    const envelope = JSON.stringify({ type: 'client-request', rpcId: crypto.randomUUID(), method: 'last-session', payload: {} })
+    const response = await remote.request({
+      method: 'POST',
+      path: '/api/remote-relay/last-session',
+      headers: [['content-type', 'application/json'], ['accept-encoding', 'identity']],
+      body: encoder.encode(envelope),
+    }, AbortSignal.timeout(5000))
+    if (response.status !== 200 || response.body === null) return undefined
+    const id = (await new Response(response.body).json())?.result?.value?.id
+    return typeof id === 'string' && SESSION_ID.test(id) ? id : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Script that makes DSH's saved selection the Session last opened in any window, before DSH reads
+ * it, so the page opens that Session directly instead of this browser's and then switching.
+ */
+function selectionScript(sessionId) {
+  const value = JSON.stringify(JSON.stringify({ sessionId }))
+  return `<script>try{localStorage.setItem("dsh.sessions.current",${value})}catch(e){}</script>`
 }
 
 function withoutFrameAncestors(value) {
@@ -230,7 +263,14 @@ async function serveFetch(request, port) {
     if (body !== null && request.mode === 'navigate' && /text\/html/i.test(headerValue(responseHeaders, 'content-type') ?? '')) {
       const html = await new Response(body).text()
       session.bootPreference = bootPreference(html)
-      body = streamOf(encoder.encode(injectCarrier(html)))
+      // Only the first page: a later reload of the DSH page keeps the selection it has.
+      let prefix = ''
+      if (session.lastSession !== undefined) {
+        const last = await Promise.race([session.lastSession, new Promise((resolve) => { setTimeout(resolve, 3000) })])
+        session.lastSession = undefined
+        if (last !== undefined) prefix = selectionScript(last)
+      }
+      body = streamOf(encoder.encode(injectCarrier(html, prefix)))
       responseHeaders = responseHeaders.filter(([name]) => name !== 'content-length')
     }
     port.postMessage({ type: 'head', status: response.status, statusText: response.statusText, headers: responseHeaders })
@@ -448,6 +488,8 @@ function pageState(session) {
   // Not a DSH page (an error page): show it as it is.
   if (doc?.documentElement?.dataset.dsThemeSource === undefined) return 'show'
   if (doc.head?.querySelector('meta[name="theme-color"]') == null) return 'wait'
+  // The page shows a blank Session until DSH has opened the starting one.
+  if (session.awaitRestore && !session.restored) return 'wait'
   const preference = session.bootPreference
   if (preference !== 'light' && preference !== 'dark' && preference !== 'system') return 'matched'
   const dark = preference === 'dark' || (preference === 'system' && doc.defaultView.matchMedia('(prefers-color-scheme: dark)').matches)
@@ -599,6 +641,7 @@ async function openSession(host) {
         if (!session.loaded) {
           // The first connection shows as the page itself.
           session.loaded = true
+          session.lastSession = fetchLastSession(remote)
           frame.src = `${APP_SCOPE.href}${token}/`
           restChip()
         } else if (session.troubled) {
@@ -648,7 +691,8 @@ async function openSession(host) {
   // bridge: 'waiting' until the page says hello, 'ready' after, 'none' when it never did.
   const session = {
     host, remote, frame, loaded: false, troubled: false, quietTimer: undefined, state: 'connecting', bridge: 'waiting', bridgeTimer: undefined,
-    revealed: false, matchedSince: undefined, bootPreference: undefined, chromeObserver: undefined, chromeTimers: [], updatePage: undefined,
+    revealed: false, matchedSince: undefined, bootPreference: undefined, lastSession: undefined, awaitRestore: false, restored: false,
+    chromeObserver: undefined, chromeTimers: [], updatePage: undefined,
   }
   current = session
   setChrome(savedChrome(host.serverId))
@@ -731,12 +775,17 @@ async function onBridgeMessage(event) {
   const data = event.data
   if (session === undefined || event.source !== session.frame.contentWindow || data?.channel !== BRIDGE || data.v !== BRIDGE_VERSION) return
   if (data.type === 'hello') {
+    // A plugin that restores the last opened Session says so, then reports when it is shown.
+    if (data.restore === true) session.awaitRestore = true
     session.updatePage?.()
     if (session.bridge !== 'ready') {
       session.bridge = 'ready'
       if ($('chip').dataset.collapsed !== undefined) restChip()
     }
     await sendContext(session)
+  } else if (data.type === 'restored') {
+    session.restored = true
+    session.updatePage?.()
   } else if (data.type === 'menu-open') {
     await sendContext(session)
   } else if (data.type === 'local') {
