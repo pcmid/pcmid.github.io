@@ -101,7 +101,7 @@ const TEXT = {
 const LANG = /^zh\b/i.test(navigator.language ?? '') ? 'zh' : 'en'
 const encoder = new TextEncoder()
 const APP_SCOPE = new URL('./app/', location.href)
-const CARRIER = '<script>(function(){try{var b=window.parent!==window&&window.parent.__DSH_REMOTE__;if(b){window.__DSH_TRANSPORT__={createWebSocket:function(u){return b.openWebSocket(u)}}}}catch(e){}})();</script>'
+const CARRIER = '<script>(function(){try{var b=window.parent!==window&&window.parent.__DSH_REMOTE__;if(b){window.__DSH_TRANSPORT__={createWebSocket:function(u){return b.openWebSocket(u)}};window.__DSH_FILE_UPLOAD__={fetch:function(u,i){return b.upload(new URL(String(u),document.baseURI).href,i||{})}}}}catch(e){}})();</script>'
 const DROPPED_REQUEST_HEADERS = new Set(['cookie', 'origin', 'referer', 'accept-encoding', 'service-worker', 'service-worker-navigation-preload'])
 const DROPPED_RESPONSE_HEADERS = new Set(['x-frame-options', 'set-cookie', 'clear-site-data'])
 
@@ -254,15 +254,39 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.startMessages()
 }
 
-/** WebSocket transport the carrier script in the embedded page calls. */
+/** Path on the DSH host of an absolute URL in the embedded page. */
+function hostPath(url) {
+  const target = new URL(url)
+  const prefix = `${APP_SCOPE.pathname}${workerClientId}`
+  const pathname = target.pathname.startsWith(`${prefix}/`) ? target.pathname.slice(prefix.length) : target.pathname
+  return `${pathname}${target.search}`
+}
+
+/** Transports the carrier script in the embedded page calls. */
 window.__DSH_REMOTE__ = {
   openWebSocket(url) {
     const session = current
-    const target = new URL(url)
-    const prefix = `${APP_SCOPE.pathname}${workerClientId}`
-    const pathname = target.pathname.startsWith(`${prefix}/`) ? target.pathname.slice(prefix.length) : target.pathname
     if (session === undefined) throw new Error('not connected')
-    return session.remote.openWebSocket(url, `${pathname}${target.search}`)
+    return session.remote.openWebSocket(url, hostPath(url))
+  },
+
+  /**
+   * DSH's file upload carrier (`__DSH_FILE_UPLOAD__`). By default DSH posts an upload from a Blob
+   * Worker, which the service worker then forwards; on iOS that upload fails. This reads the body
+   * in the page and sends it through the tunnel directly.
+   */
+  async upload(url, init) {
+    const session = current
+    if (session === undefined) throw new Error('not connected')
+    const body = init.body == null ? null : new Uint8Array(await new Response(init.body).arrayBuffer())
+    const headers = [...new Headers(init.headers)].filter(([name]) => !DROPPED_REQUEST_HEADERS.has(name))
+    headers.push(['accept-encoding', 'identity'])
+    const response = await session.remote.request({ method: init.method ?? 'POST', path: hostPath(url), headers, body }, init.signal)
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers.filter(([name]) => !DROPPED_RESPONSE_HEADERS.has(name)),
+    })
   },
 }
 
