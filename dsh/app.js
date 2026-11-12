@@ -209,7 +209,7 @@ async function fetchLastSession(remote) {
     const envelope = JSON.stringify({ type: 'client-request', rpcId: crypto.randomUUID(), method: 'last-session', payload: {} })
     const response = await remote.request({
       method: 'POST',
-      path: '/api/remote-relay/last-session',
+      path: '/api/pcmid/remote-relay/last-session',
       headers: [['content-type', 'application/json'], ['accept-encoding', 'identity']],
       body: encoder.encode(envelope),
     }, AbortSignal.timeout(5000))
@@ -765,7 +765,8 @@ async function sendContext(session) {
     state,
     shown: true,
     pending: null,
-    rows: { local: null, remotes },
+    // Removing here forgets the DSH in this browser, like the home page's Remove button.
+    rows: { local: null, removable: true, remotes },
     attributes: {},
   }, location.origin)
 }
@@ -794,6 +795,12 @@ async function onBridgeMessage(event) {
     leave()
     $('add-card').scrollIntoView({ block: 'center' })
     $('pair-input').focus()
+  } else if (data.type === 'remove' && typeof data.id === 'string') {
+    const host = (await listHosts()).find((candidate) => candidate.serverId === data.id)
+    if (host === undefined || current !== session || !confirm(t('forgetConfirm', { host: hostLabel(host) }))) return
+    await deleteHost(host.serverId)
+    if (host.serverId === session.host.serverId) leave()
+    else await sendContext(session)
   } else if (data.type === 'row' && typeof data.id === 'string') {
     if (data.id === session.host.serverId) {
       if (session.state !== 'connected') session.remote.retryNow()
