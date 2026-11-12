@@ -471,9 +471,10 @@ function hostLabel(host) {
 
 // The DSH page in the frame runs the dsh-remote-relay client plugin. Embedded, it says hello to its
 // parent and, once answered, shows its sidebar device button with a menu built from our rows. This
-// window answers as a DSH that shows another device would: the menu lists the DSHs paired in this
-// browser, and "This device" returns to the launcher. The messages carry no secrets; only the
-// current frame is heard.
+// window answers as a DSH that shows another device would, except that it sends no local row: the
+// menu lists the DSHs paired in this browser and "Add device", which opens the launcher's add card.
+// A plugin older than 0.2.4 still draws "This device", which returns to the launcher. The messages
+// carry no secrets; only the current frame is heard.
 const BRIDGE = 'dsh-remote-relay'
 const BRIDGE_VERSION = 1
 const BRIDGE_WAIT_MS = 15_000
@@ -507,7 +508,7 @@ async function sendContext(session) {
     state,
     shown: true,
     pending: null,
-    rows: { local: { id: session.host.deviceId ?? '', name: session.host.deviceName || guessDeviceName(), current: false }, remotes },
+    rows: { local: null, remotes },
     attributes: {},
   }, location.origin)
 }
