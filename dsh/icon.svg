@@ -10,7 +10,7 @@
     <rect x="9" y="26" width="13" height="22" rx="3"/>
     <rect x="34" y="26" width="21" height="14" rx="2.5"/>
     <path d="M40 48h9M44.5 40v8"/>
-    <path d="M15.5 21C19 13 25 10 32 10s13 3 16.5 11" stroke-dasharray="0.1 6"/>
+    <path d="M15.5 21C19 13 25 10 32 10s13 3 16.5 11" stroke-dasharray="0.1 5.9" stroke-dashoffset="-0.11"/>
   </g>
   <circle cx="32" cy="10" r="4.5" fill="#fff"/>
   <circle cx="15.5" cy="43" r="1.6" fill="#fff"/>

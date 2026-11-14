@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- icon.svg without rounded corners, the glyph centred inside the maskable safe zone (radius 40%).
+       Home screens do not take SVG, so regenerate the PNGs after changing either icon:
+       rsvg-convert -w 512 icon-maskable.svg -o icon-maskable.png && rsvg-convert -w 180 icon-maskable.svg -o apple-touch-icon.png && rsvg-convert -w 512 icon.svg -o icon.png -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b7ff2"/>
+      <stop offset="1" stop-color="#1d4fc0"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" fill="url(#bg)"/>
+  <g transform="translate(32 32) scale(0.8) translate(-32 -27.5)">
+    <g fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="9" y="26" width="13" height="22" rx="3"/>
+      <rect x="34" y="26" width="21" height="14" rx="2.5"/>
+      <path d="M40 48h9M44.5 40v8"/>
+      <path d="M15.5 21C19 13 25 10 32 10s13 3 16.5 11" stroke-dasharray="0.1 5.9" stroke-dashoffset="-0.11"/>
+    </g>
+    <circle cx="32" cy="10" r="4.5" fill="#fff"/>
+    <circle cx="15.5" cy="43" r="1.6" fill="#fff"/>
+  </g>
+</svg>
