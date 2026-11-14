@@ -8,7 +8,7 @@
 // index.html loads this file as `app.js?v=<version>`; the same query reaches the other scripts, so a
 // CDN that caches script files for hours cannot pair a new app.js with an old tunnel.js.
 const RELEASE = new URL(import.meta.url).search
-const { RemoteHost, TunnelError, createIdentity, decodePairing, pairDevice } = await import(`./tunnel.js${RELEASE}`)
+const { RemoteHost, TunnelError, createIdentity, decodePairing, normalizeRelayList, pairDevice } = await import(`./tunnel.js${RELEASE}`)
 
 const TEXT = {
   en: {
@@ -41,6 +41,9 @@ const TEXT = {
     connecting: 'Connecting to {host}…',
     retrying: 'Cannot reach {host}: {error}',
     connected: 'Connected to {host}',
+    connectedVia: 'Connected to {host} via {relay}',
+    relaysOpenOnly: 'Relay latency is only available for the DSH that is open.',
+    switchSlow: 'Not switched yet; the chosen relay is tried first when the connection comes back.',
     rejected: 'This device is no longer paired with {host}.',
     failed: '{error}',
     loading: 'Loading…',
@@ -85,6 +88,9 @@ const TEXT = {
     connecting: '正在连接 {host}…',
     retrying: '无法连接 {host}：{error}',
     connected: '已连接 {host}',
+    connectedVia: '已连接 {host}（经 {relay}）',
+    relaysOpenOnly: '只能查看当前打开的 DSH 的线路。',
+    switchSlow: '还没切换过去；连接恢复时会先走所选线路。',
     rejected: '此设备已不再与 {host} 配对。',
     failed: '{error}',
     loading: '正在加载…',
@@ -151,9 +157,47 @@ async function store(mode, operate) {
   })
 }
 
-const listHosts = () => store('readonly', (hosts) => hosts.getAll())
-const saveHost = (host) => store('readwrite', (hosts) => hosts.put(host))
+/** A stored host with `relayUrls`; records from before 0.4.0 have a single `relayUrl`. */
+const withRelays = (host) => ({ ...host, relayUrls: normalizeRelayList(host.relayUrls ?? host.relayUrl) })
+const listHosts = async () => (await store('readonly', (hosts) => hosts.getAll())).map(withRelays)
+// `relayUrl` stays the first relay so an older launcher build can still use the record.
+const saveHost = (host) => store('readwrite', (hosts) => hosts.put({ ...host, relayUrl: host.relayUrls[0] }))
 const deleteHost = (serverId) => store('readwrite', (hosts) => hosts.delete(serverId))
+
+/** Store the relay list a host offered, if this browser still keeps that host. */
+function saveRelays(serverId, relayUrls) {
+  return store('readwrite', (hosts) => {
+    const request = hosts.get(serverId)
+    request.onsuccess = () => {
+      if (request.result !== undefined && relayUrls.length > 0) hosts.put({ ...request.result, relayUrls, relayUrl: relayUrls[0] })
+    }
+    return request
+  })
+}
+
+/** Store the relay this browser prefers for a host, or none. */
+function savePreferredRelay(serverId, relayUrl) {
+  return store('readwrite', (hosts) => {
+    const request = hosts.get(serverId)
+    request.onsuccess = () => {
+      if (request.result === undefined) return
+      const next = { ...request.result }
+      if (relayUrl === null) delete next.preferredRelay
+      else next.preferredRelay = relayUrl
+      hosts.put(next)
+    }
+    return request
+  })
+}
+
+/** Host name of a relay URL, for display. */
+function relayHost(relayUrl) {
+  try {
+    return new URL(relayUrl).host
+  } catch {
+    return String(relayUrl ?? '')
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Service worker bridge
@@ -367,7 +411,8 @@ async function renderHosts() {
     name.textContent = host.hostName || host.serverId.slice(0, 8)
     const sub = document.createElement('div')
     sub.className = 'sub'
-    sub.textContent = `${new URL(host.relayUrl).host} · ${t('pairedAt', { date: new Date(host.pairedAt).toLocaleDateString() })}`
+    const relays = host.relayUrls.length > 1 ? `${relayHost(host.relayUrls[0])} +${host.relayUrls.length - 1}` : relayHost(host.relayUrls[0])
+    sub.textContent = `${relays} · ${t('pairedAt', { date: new Date(host.pairedAt).toLocaleDateString() })}`
     info.append(name, sub)
     const forget = document.createElement('button')
     forget.type = 'button'
@@ -525,7 +570,7 @@ function watchPage(session) {
     $('veil').textContent = ''
     setTimeout(() => {
       if (current !== session || $('chip').dataset.state !== 'loading') return
-      setChip('connected', t('connected', { host: hostLabel(session.host) }))
+      setChip('connected', connectedText(session))
       restChip()
     }, FADE_MS)
   }
@@ -637,14 +682,21 @@ async function openSession(host) {
   closeSession()
   const label = hostLabel(host)
   const remote = new RemoteHost({
-    relayUrl: host.relayUrl,
+    relayUrls: host.relayUrls,
     serverId: host.serverId,
     device: { privateKey: host.privateKey, publicJwk: host.publicJwk },
     deviceName: host.deviceName,
+    preferredRelay: host.preferredRelay,
+    onrelays: (relayUrls) => {
+      host.relayUrls = relayUrls
+      void saveRelays(host.serverId, relayUrls).catch(() => { /* kept for this visit only */ })
+      session.relayWatch?.listChanged()
+    },
     onstatus: (status) => {
       if (current?.remote !== remote) return
       session.state = ['connected', 'rejected', 'retrying'].includes(status.state) ? status.state : 'connecting'
       void sendContext(session)
+      session.relayWatch?.emit()
       if (status.state === 'connected') {
         clearTimeout(session.quietTimer)
         session.quietTimer = undefined
@@ -660,7 +712,7 @@ async function openSession(host) {
           setChip('loading', t('loadingHost', { host: label }))
           return
         }
-        setChip('connected', t('connected', { host: label }))
+        setChip('connected', connectedText(session))
         restChip(troubled ? 2500 : 0)
         return
       }
@@ -734,6 +786,102 @@ function hostLabel(host) {
   return host.hostName || host.serverId.slice(0, 8)
 }
 
+/**
+ * Answer the open DSH page's relays dialog: the relay list at once, then each round trip as it
+ * arrives, so a relay that does not answer holds up nothing else. Choosing a relay stores it and
+ * moves the tunnel in the background; the dialog sees the switch through later snapshots.
+ * @param {object} session - the open session.
+ * @returns {{ emit: () => void, measureAll: () => void, listChanged: () => void, pin: (relayUrl: string | null) => Promise<void> }} the watch.
+ */
+function watchRelays(session) {
+  const remote = session.remote
+  const rows = new Map()
+  let switching = null
+  // A switch that ended on another relay because the chosen one did not answer in time.
+  let missed = null
+  let notice = null
+  // Only the latest choice settles the dialog's switch state.
+  let turn = 0
+  const live = () => remote.mux !== undefined && !remote.mux.closed
+  const emit = () => {
+    const target = session.frame.contentWindow
+    if (current !== session || target === null || session.relayWatch !== watch) return
+    target.postMessage({
+      channel: BRIDGE,
+      v: BRIDGE_VERSION,
+      type: 'relays-state',
+      id: session.host.serverId,
+      rows: remote.relayUrls.map((relayUrl) => {
+        const row = rows.get(relayUrl)
+        return { relayUrl, host: relayHost(relayUrl), ms: row?.ms ?? null, code: row?.code ?? '', error: row?.error ?? '', pending: row?.pending === true }
+      }),
+      current: live() ? remote.relayUrl ?? null : null,
+      preferred: remote.preferred ?? null,
+      switching,
+      missed,
+      notice,
+    }, location.origin)
+  }
+  // A row being measured again keeps its last result until the new one arrives.
+  const measure = (relayUrl) => {
+    const row = rows.get(relayUrl) ?? { token: 0 }
+    rows.set(relayUrl, row)
+    const token = ++row.token
+    row.pending = true
+    void remote.probeOne(relayUrl).then((result) => {
+      if (row.token !== token) return
+      Object.assign(row, { pending: false, ms: result.ms, code: result.code ?? '', error: result.error ?? '' })
+      emit()
+    })
+  }
+  const watch = {
+    emit,
+    measureAll() {
+      for (const relayUrl of remote.relayUrls) measure(relayUrl)
+      emit()
+    },
+    /** The host reported a different relay list: show it, and measure the relays that are new. */
+    listChanged() {
+      for (const relayUrl of remote.relayUrls) if (!rows.has(relayUrl)) measure(relayUrl)
+      emit()
+    },
+    async pin(relayUrl) {
+      if (relayUrl !== null && !remote.relayUrls.includes(relayUrl)) return
+      const mine = ++turn
+      notice = null
+      missed = null
+      switching = relayUrl !== null && live() && remote.relayUrl !== relayUrl ? relayUrl : null
+      const moving = remote.prefer(relayUrl)
+      emit()
+      if (relayUrl === null) delete session.host.preferredRelay
+      else session.host.preferredRelay = relayUrl
+      await savePreferredRelay(session.host.serverId, relayUrl).catch(() => { /* kept for this visit only */ })
+      try {
+        await moving
+        if (mine !== turn || switching === null) return
+        // The new tunnel runs through the chosen relay, or through the next one in order when the
+        // chosen relay did not answer in time.
+        if (remote.relayUrl !== switching) missed = switching
+        switching = null
+        if (remote.relayUrl !== undefined) measure(remote.relayUrl)
+        emit()
+      } catch {
+        if (mine !== turn) return
+        switching = null
+        notice = t('switchSlow')
+        emit()
+      }
+    },
+  }
+  return watch
+}
+
+/** Chip text of a connected session, naming the relay that carries it. */
+function connectedText(session) {
+  const relay = session.remote.relayUrl
+  return relay === undefined ? t('connected', { host: hostLabel(session.host) }) : t('connectedVia', { host: hostLabel(session.host), relay: relayHost(relay) })
+}
+
 // ---------------------------------------------------------------------------
 // Device menu bridge
 // ---------------------------------------------------------------------------
@@ -755,12 +903,14 @@ async function sendContext(session) {
   if (current !== session || target === null) return
   const state = session.state
   const tone = state === 'connected' ? 'ok' : state === 'connecting' ? 'warn' : 'error'
+  const relay = state === 'connected' ? session.remote.relayUrl : undefined
   const remotes = hosts.map((host) => {
     const shown = host.serverId === session.host.serverId
     return {
       id: host.serverId,
       name: hostLabel(host),
-      meta: shown ? t(`state_${state}`) : '',
+      // The open DSH shows its relay and the end-to-end round trip of the tunnel through it.
+      meta: !shown ? '' : [t(`state_${state}`), relay === undefined ? null : relayHost(relay), relay !== undefined && typeof session.remote.mux?.rtt === 'number' ? `${session.remote.mux.rtt} ms` : null].filter(Boolean).join(' · '),
       metaTone: shown && tone === 'error' ? 'error' : undefined,
       tone: shown ? tone : undefined,
       current: shown,
@@ -777,8 +927,9 @@ async function sendContext(session) {
     state,
     shown: true,
     pending: null,
-    // Removing here forgets the DSH in this browser, like the home page's Remove button.
-    rows: { local: null, removable: true, remotes },
+    // Removing here forgets the DSH in this browser, like the home page's Remove button. Relay
+    // probes are answered for the DSH that is open (`relays` messages).
+    rows: { local: null, removable: true, relays: true, remotes },
     attributes: {},
   }, location.origin)
 }
@@ -820,6 +971,18 @@ async function onBridgeMessage(event) {
     }
     const host = (await listHosts()).find((candidate) => candidate.serverId === data.id)
     if (host !== undefined && current === session) await openSession(host)
+  } else if (data.type === 'relays' && typeof data.id === 'string') {
+    // Only the open DSH has a tunnel to measure; another paired DSH would need one of its own.
+    if (data.id !== session.host.serverId) {
+      session.frame.contentWindow?.postMessage({ channel: BRIDGE, v: BRIDGE_VERSION, type: 'relays-state', id: data.id, error: t('relaysOpenOnly') }, location.origin)
+      return
+    }
+    session.relayWatch ??= watchRelays(session)
+    // `pin` (a relay, or null) chooses the relay this browser uses first; otherwise measure again.
+    if (Object.hasOwn(data, 'pin') && (data.pin === null || typeof data.pin === 'string')) void session.relayWatch.pin(data.pin)
+    else session.relayWatch.measureAll()
+  } else if (data.type === 'relays-close') {
+    session.relayWatch = undefined
   }
 }
 
@@ -865,7 +1028,7 @@ async function startPairing(code, errorElement) {
       const result = await pairDevice({ pairing, device, deviceName })
       const host = {
         serverId: pairing.serverId,
-        relayUrl: pairing.relayUrl,
+        relayUrls: result.relayUrls.length > 0 ? result.relayUrls : pairing.relayUrls,
         hostName: result.hostName || pairing.hostName,
         deviceId: device.id,
         deviceName: result.device.name || deviceName,
