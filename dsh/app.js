@@ -406,6 +406,8 @@ const SYSTEM_DARK = matchMedia('(prefers-color-scheme: dark)')
 const CHROME_KEY = 'dsh-remote:chrome:'
 const REVEAL_LIMIT_MS = 20_000
 const SETTLE_MS = 300
+// A little longer than the frame's opacity transition in index.html.
+const FADE_MS = 250
 let themeMeta
 /** @type {{ color: string, dark: boolean } | undefined} */
 let shownChrome
@@ -519,10 +521,13 @@ function watchPage(session) {
   const reveal = () => {
     session.revealed = true
     session.frame.removeAttribute('data-pending')
-    if (current === session && $('chip').dataset.state === 'loading') {
+    // The chip goes once the page has faded in fully; nothing behind the page says loading meanwhile.
+    $('veil').textContent = ''
+    setTimeout(() => {
+      if (current !== session || $('chip').dataset.state !== 'loading') return
       setChip('connected', t('connected', { host: hostLabel(session.host) }))
       restChip()
-    }
+    }, FADE_MS)
   }
   const update = () => {
     scheduled = false
