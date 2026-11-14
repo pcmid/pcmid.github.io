@@ -42,7 +42,7 @@ const TEXT = {
     retrying: 'Cannot reach {host}: {error}',
     connected: 'Connected to {host}',
     connectedVia: 'Connected to {host} via {relay}',
-    relaysOpenOnly: 'Relay latency is only available for the DSH that is open.',
+    relaysUnknown: 'This DSH is no longer kept in this browser.',
     switchSlow: 'Not switched yet; the chosen relay is tried first when the connection comes back.',
     rejected: 'This device is no longer paired with {host}.',
     failed: '{error}',
@@ -89,7 +89,7 @@ const TEXT = {
     retrying: '无法连接 {host}：{error}',
     connected: '已连接 {host}',
     connectedVia: '已连接 {host}（经 {relay}）',
-    relaysOpenOnly: '只能查看当前打开的 DSH 的线路。',
+    relaysUnknown: '这个浏览器里已经没有这台 DSH。',
     switchSlow: '还没切换过去；连接恢复时会先走所选线路。',
     rejected: '此设备已不再与 {host} 配对。',
     failed: '{error}',
@@ -690,7 +690,7 @@ async function openSession(host) {
     onrelays: (relayUrls) => {
       host.relayUrls = relayUrls
       void saveRelays(host.serverId, relayUrls).catch(() => { /* kept for this visit only */ })
-      session.relayWatch?.listChanged()
+      if (session.relayWatch?.id === host.serverId) session.relayWatch.listChanged()
     },
     onstatus: (status) => {
       if (current?.remote !== remote) return
@@ -787,14 +787,34 @@ function hostLabel(host) {
 }
 
 /**
- * Answer the open DSH page's relays dialog: the relay list at once, then each round trip as it
- * arrives, so a relay that does not answer holds up nothing else. Choosing a relay stores it and
- * moves the tunnel in the background; the dialog sees the switch through later snapshots.
- * @param {object} session - the open session.
- * @returns {{ emit: () => void, measureAll: () => void, listChanged: () => void, pin: (relayUrl: string | null) => Promise<void> }} the watch.
+ * Answer the relays dialog of the open DSH page for one DSH paired in this browser: the relay list
+ * at once, then each round trip as it arrives, so a relay that does not answer holds up nothing
+ * else. Measuring happens only while the dialog asks.
+ *
+ * The open DSH is measured through its tunnel, and choosing a relay moves the tunnel in the
+ * background; the dialog sees the switch through later snapshots. Another paired DSH has no
+ * tunnel: each relay gets a short-lived probe connection, and a chosen relay is stored for the
+ * next time that DSH is opened.
+ * @param {object} session - the open session, whose page shows the dialog.
+ * @param {object} host - the stored DSH the dialog is about.
+ * @param {RemoteHost} [tunnel] - its tunnel, when it is the open DSH.
+ * @returns {{ id: string, emit: () => void, measureAll: () => void, listChanged: () => void, pin: (relayUrl: string | null) => Promise<void> }} the watch.
  */
-function watchRelays(session) {
-  const remote = session.remote
+function watchRelays(session, host, tunnel) {
+  // A RemoteHost that is never started only makes probe connections.
+  const remote = tunnel ?? new RemoteHost({
+    relayUrls: host.relayUrls,
+    serverId: host.serverId,
+    device: { privateKey: host.privateKey, publicJwk: host.publicJwk },
+    deviceName: host.deviceName,
+    preferredRelay: host.preferredRelay,
+    // A probe handshake carries the relays that DSH offers now; keep them for its next visit.
+    onrelays: (relayUrls) => {
+      host.relayUrls = relayUrls
+      void saveRelays(host.serverId, relayUrls).catch(() => { /* kept for this dialog only */ })
+      watch.listChanged()
+    },
+  })
   const rows = new Map()
   let switching = null
   // A switch that ended on another relay because the chosen one did not answer in time.
@@ -810,7 +830,7 @@ function watchRelays(session) {
       channel: BRIDGE,
       v: BRIDGE_VERSION,
       type: 'relays-state',
-      id: session.host.serverId,
+      id: host.serverId,
       rows: remote.relayUrls.map((relayUrl) => {
         const row = rows.get(relayUrl)
         return { relayUrl, host: relayHost(relayUrl), ms: row?.ms ?? null, code: row?.code ?? '', error: row?.error ?? '', pending: row?.pending === true }
@@ -835,6 +855,7 @@ function watchRelays(session) {
     })
   }
   const watch = {
+    id: host.serverId,
     emit,
     measureAll() {
       for (const relayUrl of remote.relayUrls) measure(relayUrl)
@@ -853,9 +874,9 @@ function watchRelays(session) {
       switching = relayUrl !== null && live() && remote.relayUrl !== relayUrl ? relayUrl : null
       const moving = remote.prefer(relayUrl)
       emit()
-      if (relayUrl === null) delete session.host.preferredRelay
-      else session.host.preferredRelay = relayUrl
-      await savePreferredRelay(session.host.serverId, relayUrl).catch(() => { /* kept for this visit only */ })
+      if (relayUrl === null) delete host.preferredRelay
+      else host.preferredRelay = relayUrl
+      await savePreferredRelay(host.serverId, relayUrl).catch(() => { /* kept for this visit only */ })
       try {
         await moving
         if (mine !== turn || switching === null) return
@@ -928,7 +949,7 @@ async function sendContext(session) {
     shown: true,
     pending: null,
     // Removing here forgets the DSH in this browser, like the home page's Remove button. Relay
-    // probes are answered for the DSH that is open (`relays` messages).
+    // dialogs are answered for every DSH paired here (`relays` messages).
     rows: { local: null, removable: true, relays: true, remotes },
     attributes: {},
   }, location.origin)
@@ -972,12 +993,17 @@ async function onBridgeMessage(event) {
     const host = (await listHosts()).find((candidate) => candidate.serverId === data.id)
     if (host !== undefined && current === session) await openSession(host)
   } else if (data.type === 'relays' && typeof data.id === 'string') {
-    // Only the open DSH has a tunnel to measure; another paired DSH would need one of its own.
-    if (data.id !== session.host.serverId) {
-      session.frame.contentWindow?.postMessage({ channel: BRIDGE, v: BRIDGE_VERSION, type: 'relays-state', id: data.id, error: t('relaysOpenOnly') }, location.origin)
-      return
+    // One dialog at a time: asking about another DSH replaces the watch.
+    if (session.relayWatch?.id !== data.id) {
+      const open = data.id === session.host.serverId
+      const host = open ? session.host : (await listHosts()).find((candidate) => candidate.serverId === data.id)
+      if (current !== session) return
+      if (host === undefined) {
+        session.frame.contentWindow?.postMessage({ channel: BRIDGE, v: BRIDGE_VERSION, type: 'relays-state', id: data.id, error: t('relaysUnknown') }, location.origin)
+        return
+      }
+      if (session.relayWatch?.id !== data.id) session.relayWatch = watchRelays(session, host, open ? session.remote : undefined)
     }
-    session.relayWatch ??= watchRelays(session)
     // `pin` (a relay, or null) chooses the relay this browser uses first; otherwise measure again.
     if (Object.hasOwn(data, 'pin') && (data.pin === null || typeof data.pin === 'string')) void session.relayWatch.pin(data.pin)
     else session.relayWatch.measureAll()
