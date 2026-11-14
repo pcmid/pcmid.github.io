@@ -44,6 +44,7 @@ const TEXT = {
     rejected: 'This device is no longer paired with {host}.',
     failed: '{error}',
     loading: 'Loading…',
+    loadingHost: 'Loading {host}…',
     retry: 'Retry',
     leave: 'Leave',
     state_connected: 'Connected',
@@ -87,6 +88,7 @@ const TEXT = {
     rejected: '此设备已不再与 {host} 配对。',
     failed: '{error}',
     loading: '正在加载…',
+    loadingHost: '正在加载 {host}…',
     retry: '重试',
     leave: '离开',
     state_connected: '已连接',
@@ -517,6 +519,10 @@ function watchPage(session) {
   const reveal = () => {
     session.revealed = true
     session.frame.removeAttribute('data-pending')
+    if (current === session && $('chip').dataset.state === 'loading') {
+      setChip('connected', t('connected', { host: hostLabel(session.host) }))
+      restChip()
+    }
   }
   const update = () => {
     scheduled = false
@@ -570,8 +576,8 @@ function watchPage(session) {
 }
 
 /**
- * Status chip over the DSH page. It shows while the tunnel is not connected and briefly when the
- * tunnel comes back; a connected session puts it away with `restChip`.
+ * Status chip over the DSH page. It shows from opening until the page is shown, while the tunnel is
+ * not connected, and briefly when the tunnel comes back; a connected session puts it away with `restChip`.
  */
 function setChip(state, text) {
   const chip = $('chip')
@@ -637,19 +643,20 @@ async function openSession(host) {
       if (status.state === 'connected') {
         clearTimeout(session.quietTimer)
         session.quietTimer = undefined
-        setChip('connected', t('connected', { host: label }))
+        const troubled = session.troubled
+        session.troubled = false
         if (!session.loaded) {
-          // The first connection shows as the page itself.
           session.loaded = true
           session.lastSession = fetchLastSession(remote)
           frame.src = `${APP_SCOPE.href}${token}/`
-          restChip()
-        } else if (session.troubled) {
-          restChip(2500)
-        } else {
-          restChip()
         }
-        session.troubled = false
+        // Until the page shows, the chip stays as the only way to leave; `reveal` puts it away.
+        if (!session.revealed) {
+          setChip('loading', t('loadingHost', { host: label }))
+          return
+        }
+        setChip('connected', t('connected', { host: label }))
+        restChip(troubled ? 2500 : 0)
         return
       }
       if (session.loaded && status.state === 'connecting' && !session.troubled) {
